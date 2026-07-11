@@ -199,6 +199,81 @@ an "RLS isolation verified" banner.
 
 ---
 
+## Billing (Stripe)
+
+Billing is **per-organization**: the Organization *is* the Stripe customer, not
+the user. A person who belongs to several orgs has a separate subscription per
+org, and only an **OWNER** of an org can change its billing.
+
+Plans gate features:
+
+| Plan | Boards | Posts per board |
+| ---- | ------ | --------------- |
+| FREE | 1      | 50              |
+| PRO  | unlimited | unlimited    |
+
+Amounts are **not** hardcoded in the app — the PRO price is created by
+`scripts/stripe-setup.ts` and read back from Stripe (`getProPriceInfo`) for
+display. Everything runs in Stripe **test mode**.
+
+### Source of truth, and how state stays in sync
+
+Stripe owns *payment* state; the `organizations` row is the app's **cached
+projection** of it — `plan`, `subscriptionStatus`, `stripeCustomerId`,
+`stripeSubscriptionId`. The app never flips a customer to PRO on its own: it
+starts a Checkout session and then waits for Stripe to tell it what happened.
+
+The projection is updated by the webhook at `app/api/stripe/webhook`:
+
+- **Signature is verified** against the raw request body with
+  `STRIPE_WEBHOOK_SECRET` (`stripe.webhooks.constructEvent`). An unsigned or
+  tampered request is rejected with `400` before any handler runs.
+- Events handled: `checkout.session.completed` (first activation),
+  `customer.subscription.updated` (renewals, plan/status changes),
+  `customer.subscription.deleted` (cancellation).
+- The org is resolved from `organizationId` stamped into subscription metadata
+  at checkout, falling back to a lookup by `stripeCustomerId`.
+- Writes go through the **owner client** (`adminPrisma`) — the webhook is a
+  trusted, cross-tenant system path with no user session, so it intentionally
+  bypasses RLS (same rationale as seeding).
+
+**Idempotency.** Each handler derives the org's *entire* desired state from the
+subscription object and writes it in one update, rather than applying a delta.
+Replaying an event, receiving duplicates (Stripe retries on non-2xx), or getting
+two events for the same subscription therefore converges to the same row — no
+double-charges-of-state, no drift. A handler error returns `500` so Stripe
+retries later.
+
+`planForSubscription` maps Stripe status → entitlement: `active`, `trialing`,
+and `past_due` grant PRO (the last keeps access during the dunning grace
+period); everything else (`canceled`, `unpaid`, `incomplete`, …) is FREE.
+
+### Why enforcement is server-side
+
+Plan limits are enforced in the **server action** that creates a board or post
+(`app/actions/board.ts` → `assertCanCreateBoard` / `assertCanCreatePost` in
+`lib/plans.ts`), never only in the UI. The frontend hides or disables things
+for UX, but a Server Action is a public POST endpoint — anyone can call it
+directly — so the authoritative check must live on the server, next to the
+write. The limit checks run *inside* `withCurrentTenant`, so the board/post
+counts they compare against are themselves RLS-scoped to the active org (a FREE
+org can't be tricked into counting another tenant's boards). Hitting a limit
+raises `PlanLimitError`, which the action turns into a friendly "upgrade to Pro"
+message — it is never a 500, and never silently succeeds.
+
+### What happens on downgrade
+
+Downgrades (cancel, or a failed-then-abandoned payment) set `plan = FREE` but
+**never delete data**. An org that created 3 boards on PRO and then downgrades
+keeps all 3 boards and their posts — they remain fully readable and editable.
+What changes is *creation*: the next `createBoard` is blocked because the org is
+already at/over the FREE cap of 1, and posting to a board that already has ≥ 50
+posts is blocked. The org gets everything back by upgrading again (or, for
+boards, by deleting down under the cap). This "keep data, block growth" policy
+avoids the data-loss and surprise of destructive downgrades.
+
+---
+
 ## Tradeoffs & limitations
 
 Honest downsides of this approach, and how they're mitigated here:
@@ -227,9 +302,11 @@ Honest downsides of this approach, and how they're mitigated here:
 
 ## What's deliberately not here yet
 
-- **Billing.**
 - **User sign-up / invitations.** Accounts and memberships come from the seed;
   there is no self-service registration or org-invite flow yet.
+- **Webhook event dedupe table.** Handlers are idempotent by construction; a
+  persisted `processed_stripe_events` ledger would additionally short-circuit
+  replays and guard against out-of-order deliveries as the event set grows.
 - **Automated RLS regression tests** asserting default-deny and cross-tenant
   denial as the schema evolves.
 - **Production connection management** (a pooler such as PgBouncer/Prisma

@@ -39,6 +39,11 @@ model User {
 }
 
 /// The tenant. All tenant-owned rows point back to an Organization.
+///
+/// Billing is per-organization: the Organization is the Stripe *customer*. The
+/// `plan`/`subscriptionStatus` columns are the app's source of truth for what
+/// the tenant is entitled to, kept in sync from Stripe webhooks (see
+/// app/api/stripe/webhook). They are written only by the owner/system path.
 model Organization {
   id        String   @id @default(cuid())
   name      String
@@ -46,8 +51,20 @@ model Organization {
   createdAt DateTime @default(now()) @map("created_at")
   updatedAt DateTime @updatedAt @map("updated_at")
 
+  // --- Billing (Stripe) -----------------------------------------------------
+  /// The Stripe Customer id for this org (`cus_…`). Null until first checkout.
+  stripeCustomerId String? @unique @map("stripe_customer_id")
+  /// The active Stripe Subscription id (`sub_…`). Null when on FREE.
+  stripeSubscriptionId String? @unique @map("stripe_subscription_id")
+  /// Entitlement tier. Gated features read this. Defaults to FREE.
+  plan Plan @default(FREE)
+  /// Raw Stripe subscription status (e.g. active, trialing, past_due,
+  /// canceled). Informational; `plan` is what enforcement checks.
+  subscriptionStatus String? @map("subscription_status")
+
   memberships Membership[]
   boards      Board[]
+  posts       Post[]
 
   @@map("organizations")
 }
@@ -81,12 +98,37 @@ model Board {
   updatedAt      DateTime @updatedAt @map("updated_at")
 
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  posts        Post[]
 
   @@index([organizationId])
   @@map("boards")
 }
 
+/// A post inside a board. Tenant-owned. Carries `organization_id` directly (not
+/// only via its board) so the same RLS `tenant_isolation` policy applies to it
+/// as to every other tenant table — see prisma/migrations/*_add_billing_and_posts.
+model Post {
+  id             String   @id @default(cuid())
+  content        String
+  boardId        String   @map("board_id")
+  organizationId String   @map("organization_id")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  board        Board        @relation(fields: [boardId], references: [id], onDelete: Cascade)
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([boardId])
+  @@index([organizationId])
+  @@map("posts")
+}
+
 enum Role {
   OWNER
   MEMBER
+}
+
+/// Subscription entitlement tier for an Organization.
+enum Plan {
+  FREE
+  PRO
 }

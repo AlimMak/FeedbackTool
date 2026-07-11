@@ -123,6 +123,39 @@ any seeded account (all seed passwords are `password123`):
 
 ---
 
+## Billing (Stripe test mode)
+
+Subscription billing gates features per **organization** (the org is the Stripe
+customer): FREE = 1 board / 50 posts per board; PRO = unlimited. See
+[ARCHITECTURE.md](./ARCHITECTURE.md#billing-stripe) for the sync + enforcement
+design.
+
+### Setup (all test mode)
+
+1. Paste your Stripe **test** secret key into `.env` as `STRIPE_SECRET_KEY`
+   (`sk_test_…`, from <https://dashboard.stripe.com/test/apikeys>).
+2. Create the products/prices and copy the printed PRO price id into `.env`:
+
+   ```bash
+   npm run stripe:setup           # prints STRIPE_PRICE_PRO="price_…"
+   ```
+
+3. Forward webhooks to the app and paste the printed `whsec_…` into `.env` as
+   `STRIPE_WEBHOOK_SECRET`:
+
+   ```bash
+   stripe listen --forward-to localhost:3000/api/stripe/webhook
+   ```
+
+4. Restart `npm run dev`. Open **/billing** as an org **owner** (e.g. Alice),
+   click **Upgrade to Pro**, and pay with test card `4242 4242 4242 4242`
+   (any future expiry / CVC). The webhook flips the org to PRO.
+
+Enforcement is server-side: on FREE, creating a 2nd board or a 51st post in a
+board is rejected with an "upgrade to Pro" message regardless of the UI.
+
+---
+
 ## Handy scripts
 
 | Command                  | What it does                                  |
@@ -136,6 +169,7 @@ any seeded account (all seed passwords are `password123`):
 | `npm run db:seed`        | Run the seed script                           |
 | `npm run db:reset`       | Drop, re-migrate, and re-seed (destructive)   |
 | `npm run db:studio`      | Open Prisma Studio                            |
+| `npm run stripe:setup`   | Create FREE/PRO products + PRO price (test)   |
 
 ## Project layout
 
