@@ -1,0 +1,31 @@
+# Postgres for local development.
+#
+# The container's superuser is `saas_owner` (POSTGRES_USER) and it owns the
+# `saas_dev` database. Prisma Migrate and the seed script connect as this role
+# (DATABASE_URL) and therefore bypass Row-Level Security.
+#
+# The runtime application role `saas_app` (RLS-enforced) is created by the init
+# script in ./docker/init, which Postgres runs once on first boot.
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: saas_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: saas_owner
+      POSTGRES_PASSWORD: owner_pw
+      POSTGRES_DB: saas_dev
+    ports:
+      - "5432:5432"
+    volumes:
+      - saas_pgdata:/var/lib/postgresql/data
+      # Runs once, only when the data volume is first initialized.
+      - ./docker/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U saas_owner -d saas_dev"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  saas_pgdata:

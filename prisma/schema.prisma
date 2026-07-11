@@ -1,0 +1,92 @@
+// Multi-tenant B2B SaaS data model.
+//
+// Tenancy model: shared database, shared schema. Every tenant-owned table
+// carries the tenant key (`organization_id`) and is protected by Postgres
+// Row-Level Security (see prisma/migrations/*_rls). The "tenant id" in this
+// codebase IS the Organization id.
+//
+// Tenant-owned tables (RLS-protected): organizations, memberships, boards.
+// Global tables (no tenant scoping): users — a person can belong to many orgs.
+//
+// Migrations and the seed script connect as `saas_owner` (DATABASE_URL), the
+// table owner, which bypasses RLS. Runtime queries connect as `saas_app`
+// (APP_DATABASE_URL) via withTenant(), which is fully subject to RLS.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+/// A person. Global identity — not tenant-scoped. Belongs to zero or more
+/// organizations through Membership.
+model User {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  name      String
+  // bcrypt hash. Nullable so future federated (OAuth) users can exist without a
+  // password; the Credentials provider rejects sign-in when it is null.
+  passwordHash String? @map("password_hash")
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  memberships Membership[]
+
+  @@map("users")
+}
+
+/// The tenant. All tenant-owned rows point back to an Organization.
+model Organization {
+  id        String   @id @default(cuid())
+  name      String
+  slug      String   @unique
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  memberships Membership[]
+  boards      Board[]
+
+  @@map("organizations")
+}
+
+/// Join table between User and Organization, carrying the user's role within
+/// that specific organization. Tenant-owned.
+model Membership {
+  id             String   @id @default(cuid())
+  role           Role     @default(MEMBER)
+  organizationId String   @map("organization_id")
+  userId         String   @map("user_id")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // A user has at most one membership (and thus one role) per organization.
+  @@unique([organizationId, userId])
+  @@index([userId])
+  @@index([organizationId])
+  @@map("memberships")
+}
+
+/// A board belonging to an organization. Tenant-owned domain object — the
+/// placeholder "real" entity that proves the stack end to end.
+model Board {
+  id             String   @id @default(cuid())
+  name           String
+  organizationId String   @map("organization_id")
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@index([organizationId])
+  @@map("boards")
+}
+
+enum Role {
+  OWNER
+  MEMBER
+}
