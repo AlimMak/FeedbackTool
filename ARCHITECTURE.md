@@ -145,7 +145,37 @@ Because the setting is transaction-local, this design is also safe behind a
 transaction-mode connection pooler (e.g. PgBouncer): the tenant context begins
 and ends within the transaction the pooler multiplexes.
 
-### 4. Parameterization
+### 4. Deriving the tenant from the authenticated session
+
+`withTenant()` takes a tenant id explicitly. In request handling we never pass
+one by hand — it is derived from the signed-in user's **active organization**.
+
+- **Auth** (`auth.ts`, Auth.js / NextAuth v5) uses a Credentials provider that
+  verifies an email + bcrypt password against the global `users` table. Sessions
+  are stateless JWTs (required by Credentials). The token carries `id` (the User)
+  and `activeOrgId` (the Organization the user is currently acting as).
+- **Route protection** is an optimistic, cookie-only check in `proxy.ts` — the
+  Next.js 16 successor to middleware (same behaviour, Node.js runtime). It reads
+  `callbacks.authorized` from the database-free `auth.config.ts`, so the Prisma
+  client is never bundled into the proxy. It redirects unauthenticated requests
+  to `/login`; it is **not** the security boundary (see below).
+- **The Data Access Layer** (`lib/dal.ts`) is the real boundary. `requireActiveOrg()`
+  resolves the session, then re-verifies — against the owner client, keyed to the
+  user's own id — that the user is still a member of the token's active org
+  (a signed token can't be trusted to only name orgs the user may act as). It
+  returns the verified org id and the user's role. `withCurrentTenant(query)`
+  feeds that id straight into `withTenant()`, so **RLS scopes every query with no
+  explicit tenant filter** and app code never handles a raw tenant id.
+- **Organization switching** (`switchOrganization` in `app/actions/org.ts`)
+  re-verifies membership, then rewrites the JWT's `activeOrgId` via
+  `unstable_update()`. On the next request the DAL feeds the new org into RLS —
+  the tenant context follows the switch automatically.
+
+Defense in depth: even if the DAL check were wrong, RLS still refuses rows for
+any org whose id isn't in `app.current_tenant`. The membership re-check exists so
+a *revoked* membership can't keep reading through a still-valid token.
+
+### 5. Parameterization
 
 `SET LOCAL app.current_tenant = '<value>'` can't be parameterized directly, so
 `withTenant` uses `set_config(name, value, is_local)` with the tenant id passed
@@ -197,11 +227,9 @@ Honest downsides of this approach, and how they're mitigated here:
 
 ## What's deliberately not here yet
 
-- **Auth.** Today `withTenant()` is called explicitly (the demo page iterates
-  the orgs). The next step is to derive the tenant from the authenticated
-  session — resolve the user's active organization, check their Membership, and
-  wrap request handlers / server actions in `withTenant(activeOrgId, …)`.
 - **Billing.**
+- **User sign-up / invitations.** Accounts and memberships come from the seed;
+  there is no self-service registration or org-invite flow yet.
 - **Automated RLS regression tests** asserting default-deny and cross-tenant
   denial as the schema evolves.
 - **Production connection management** (a pooler such as PgBouncer/Prisma

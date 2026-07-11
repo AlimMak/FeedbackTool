@@ -1,4 +1,5 @@
 import { PrismaClient, Role } from "@prisma/client";
+import bcrypt from "bcryptjs";
 
 // The seed connects as `saas_owner` (DATABASE_URL) and therefore bypasses RLS,
 // which is exactly what's needed to write across multiple tenants in one pass.
@@ -7,28 +8,36 @@ const prisma = new PrismaClient();
 async function main(): Promise<void> {
   console.log("Seeding database…");
 
+  // Shared dev password for every seeded account (dev-only). The Credentials
+  // provider (auth.ts) compares against this bcrypt hash on sign-in.
+  const passwordHash = await bcrypt.hash("password123", 10);
+
   // --- Users (global identities; not tenant-scoped) --------------------------
   const alice = await prisma.user.upsert({
     where: { email: "alice@acme.test" },
-    update: {},
-    create: { email: "alice@acme.test", name: "Alice Anderson" },
+    update: { passwordHash },
+    create: { email: "alice@acme.test", name: "Alice Anderson", passwordHash },
   });
   const bob = await prisma.user.upsert({
     where: { email: "bob@acme.test" },
-    update: {},
-    create: { email: "bob@acme.test", name: "Bob Brown" },
+    update: { passwordHash },
+    create: { email: "bob@acme.test", name: "Bob Brown", passwordHash },
   });
   const carol = await prisma.user.upsert({
     where: { email: "carol@globex.test" },
-    update: {},
-    create: { email: "carol@globex.test", name: "Carol Clark" },
+    update: { passwordHash },
+    create: { email: "carol@globex.test", name: "Carol Clark", passwordHash },
   });
   // Dave belongs to BOTH orgs — the reason User is global rather than
-  // tenant-owned.
+  // tenant-owned. Sign in as dave@contractor.test to exercise org switching.
   const dave = await prisma.user.upsert({
     where: { email: "dave@contractor.test" },
-    update: {},
-    create: { email: "dave@contractor.test", name: "Dave Davis" },
+    update: { passwordHash },
+    create: {
+      email: "dave@contractor.test",
+      name: "Dave Davis",
+      passwordHash,
+    },
   });
 
   // --- Organizations (tenants) ----------------------------------------------

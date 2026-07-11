@@ -4,10 +4,15 @@ Foundation for a multi-tenant B2B SaaS: **Next.js (App Router, TypeScript
 strict) + Tailwind + Postgres + Prisma**, with tenant isolation enforced by
 **Postgres Row-Level Security (RLS)**.
 
-This repo is the project scaffold + data model only. No auth or billing yet.
-The `/` page proves the stack works end to end by rendering each organization
-with its boards and members — read entirely through the RLS-enforced runtime
-connection.
+Authentication (Auth.js / NextAuth v5, email + password) and **organization
+switching** are wired in: the signed-in user's active organization is pushed
+into the Postgres RLS session variable on every request, so tenant isolation is
+enforced automatically — no query ever writes an explicit `organization_id`
+filter. No billing yet.
+
+After signing in, the `/` dashboard renders the active organization's boards and
+members, read entirely through the RLS-enforced runtime connection. Users who
+belong to more than one org get a switcher that changes the active tenant.
 
 See **[ARCHITECTURE.md](./ARCHITECTURE.md)** for the multi-tenancy design and
 its tradeoffs.
@@ -106,8 +111,15 @@ npm run db:seed
 npm run dev
 ```
 
-Open **http://localhost:3000** — you'll see both organizations with their
-boards and members, plus a banner confirming RLS isolation between tenants.
+Open **http://localhost:3000**. You'll be redirected to `/login` — sign in with
+any seeded account (all seed passwords are `password123`):
+
+| Email                  | Belongs to        |
+| ---------------------- | ----------------- |
+| `alice@acme.test`      | Acme (owner)      |
+| `bob@acme.test`        | Acme (member)     |
+| `carol@globex.test`    | Globex (owner)    |
+| `dave@contractor.test` | Acme **and** Globex — sign in as Dave to try the org switcher |
 
 ---
 
@@ -128,18 +140,30 @@ boards and members, plus a banner confirming RLS isolation between tenants.
 ## Project layout
 
 ```
+auth.ts               NextAuth instance + Credentials provider (bcrypt)
+auth.config.ts        DB-free auth config (route protection, JWT/session callbacks)
+proxy.ts              Next.js 16 "proxy" (ex-middleware): optimistic route protection
 app/
   layout.tsx          Root layout
-  page.tsx            "/" — org + board demo, reads via withTenant() under RLS
+  global-error.tsx    Root error boundary
+  page.tsx            "/" — dashboard: active org's boards + members, org switcher
+  login/              Sign-in page + client form
+  actions/            Server actions: authenticate/logout, switchOrganization
+  ui/org-switcher.tsx Client org switcher
+  api/auth/[...nextauth]/route.ts   Auth.js route handlers
 lib/
   prisma.ts           adminPrisma  — owner role, BYPASSES RLS (system/admin only)
   tenant-db.ts        appPrisma + withTenant() — runtime role, RLS enforced
+  dal.ts              Data Access Layer: session → active org → withCurrentTenant()
+types/
+  next-auth.d.ts      Session/JWT augmentation (user id, activeOrgId)
 prisma/
   schema.prisma       Data model
-  seed.ts             Seed script (2 orgs, users, memberships, boards)
+  seed.ts             Seed script (2 orgs, users w/ passwords, memberships, boards)
   migrations/
     *_init/                    Tables
     *_rls_tenant_isolation/    Enable RLS, policies, and saas_app grants
+    *_add_password_hash/       users.password_hash for the Credentials provider
 docker/
   init/               Postgres first-boot SQL (creates saas_app role)
 scripts/
@@ -149,14 +173,22 @@ docker-compose.yml    Postgres service
 
 ## How tenant-scoped queries work
 
-```ts
-import { withTenant } from "@/lib/tenant-db";
+In request handling, reach for the session-aware wrapper — it resolves the
+signed-in user's active organization and pushes it into RLS for you:
 
-// Sets `app.current_tenant` for the duration of one transaction; RLS scopes
-// every query to this org. Note: no `where: { organizationId }` needed.
-const boards = await withTenant(orgId, (tx) => tx.board.findMany());
+```ts
+import { withCurrentTenant } from "@/lib/dal";
+
+// Derives the active org from the session, verifies membership, and scopes every
+// query via RLS. No `where: { organizationId }` needed.
+const boards = await withCurrentTenant((tx) => tx.board.findMany());
 ```
 
-Outside `withTenant()`, the `saas_app` role sees **no** tenant-owned rows
+Under the hood this calls `withTenant(activeOrgId, …)`, which sets
+`app.current_tenant` for the duration of one transaction. You can still call
+`withTenant()` directly for trusted paths that already know the tenant id
+(e.g. seeding-adjacent tooling).
+
+Outside any tenant context, the `saas_app` role sees **no** tenant-owned rows
 (RLS default-deny). Cross-tenant reads return zero rows and cross-tenant writes
 are rejected by the policies' `WITH CHECK` clause.

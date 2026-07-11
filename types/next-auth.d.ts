@@ -26,7 +26,9 @@ declare module "next-auth" {
   }
 }
 
-declare module "next-auth/jwt" {
+// Auth.js's JWT interface lives in @auth/core/jwt; `next-auth/jwt` only
+// re-exports it, so augment the source module for the merge to take effect.
+declare module "@auth/core/jwt" {
   interface JWT {
     id?: string;
     activeOrgId?: string | null;
