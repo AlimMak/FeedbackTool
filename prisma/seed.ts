@@ -1,4 +1,4 @@
-import { PrismaClient, Role } from "@prisma/client";
+import { PrismaClient, Role, PostStatus } from "@prisma/client";
 import bcrypt from "bcryptjs";
 
 // The seed connects as `saas_owner` (DATABASE_URL) and therefore bypasses RLS,
@@ -77,28 +77,164 @@ async function main(): Promise<void> {
     });
   }
 
-  // --- Boards (a couple per org) --------------------------------------------
-  // Idempotent: clear and recreate this seed's boards for these two orgs.
+  // --- Boards, posts, votes, comments ---------------------------------------
+  // Idempotent: clearing the boards cascades to their posts, votes and comments
+  // (onDelete: Cascade), so re-seeding rebuilds a clean, realistic dataset.
   await prisma.board.deleteMany({
     where: { organizationId: { in: [acme.id, globex.id] } },
   });
-  await prisma.board.createMany({
-    data: [
-      { name: "Q3 Roadmap", organizationId: acme.id },
-      { name: "Marketing", organizationId: acme.id },
-      { name: "Engineering", organizationId: acme.id },
-      { name: "Launch Plan", organizationId: globex.id },
-      { name: "Design System", organizationId: globex.id },
-    ],
-  });
 
-  const [orgCount, userCount, boardCount] = await Promise.all([
-    prisma.organization.count(),
-    prisma.user.count(),
-    prisma.board.count(),
+  type PostSpec = {
+    title: string;
+    description?: string;
+    status: PostStatus;
+    author: { id: string };
+    voters: ReadonlyArray<{ id: string }>;
+    comments?: ReadonlyArray<{ author: { id: string }; body: string }>;
+  };
+
+  async function seedBoard(
+    org: { id: string },
+    name: string,
+    posts: ReadonlyArray<PostSpec>,
+  ): Promise<void> {
+    const board = await prisma.board.create({
+      data: { name, organizationId: org.id },
+    });
+    for (const spec of posts) {
+      await prisma.post.create({
+        data: {
+          title: spec.title,
+          description: spec.description,
+          status: spec.status,
+          boardId: board.id,
+          organizationId: org.id,
+          authorId: spec.author.id,
+          votes: {
+            create: spec.voters.map((u) => ({
+              userId: u.id,
+              organizationId: org.id,
+            })),
+          },
+          comments: {
+            create: (spec.comments ?? []).map((c) => ({
+              body: c.body,
+              authorId: c.author.id,
+              organizationId: org.id,
+            })),
+          },
+        },
+      });
+    }
+  }
+
+  await seedBoard(acme, "Q3 Roadmap", [
+    {
+      title: "Dark mode",
+      description: "A proper dark theme that respects the system setting.",
+      status: PostStatus.IN_PROGRESS,
+      author: bob,
+      voters: [alice, bob, dave],
+      comments: [
+        { author: alice, body: "Yes please — my eyes will thank you." },
+        { author: dave, body: "Make sure charts are readable in dark too." },
+      ],
+    },
+    {
+      title: "Bulk export to CSV",
+      description: "Export boards and posts to CSV for offline analysis.",
+      status: PostStatus.PLANNED,
+      author: dave,
+      voters: [bob, dave],
+      comments: [{ author: bob, body: "Would use this weekly." }],
+    },
+    {
+      title: "Slack integration",
+      description: "Post notifications to a Slack channel on new activity.",
+      status: PostStatus.OPEN,
+      author: alice,
+      voters: [alice],
+    },
+    {
+      title: "SSO / SAML login",
+      description: "Enterprise single sign-on for larger teams.",
+      status: PostStatus.PLANNED,
+      author: alice,
+      voters: [alice, bob, dave],
+      comments: [
+        { author: bob, body: "Okta support would unblock our rollout." },
+        { author: dave, body: "+1 for SAML." },
+        { author: alice, body: "Tracking this for next quarter." },
+      ],
+    },
+    {
+      title: "Keyboard shortcuts",
+      description: "Navigate and vote without leaving the keyboard.",
+      status: PostStatus.DONE,
+      author: bob,
+      voters: [bob],
+      comments: [{ author: dave, body: "Shipped and lovely." }],
+    },
+    {
+      title: "Native mobile app",
+      description: "iOS and Android apps for on-the-go feedback.",
+      status: PostStatus.OPEN,
+      author: dave,
+      voters: [],
+    },
   ]);
+
+  await seedBoard(acme, "Marketing", [
+    {
+      title: "Public roadmap page",
+      description: "A shareable, read-only view of what's planned.",
+      status: PostStatus.PLANNED,
+      author: alice,
+      voters: [alice, dave],
+    },
+    {
+      title: "Case studies section",
+      status: PostStatus.OPEN,
+      author: bob,
+      voters: [bob],
+    },
+  ]);
+
+  // An intentionally empty board to show the empty state.
+  await seedBoard(acme, "Engineering", []);
+
+  await seedBoard(globex, "Launch Plan", [
+    {
+      title: "Beta invite flow",
+      description: "Waitlist and staged invites for the beta.",
+      status: PostStatus.IN_PROGRESS,
+      author: carol,
+      voters: [carol, dave],
+      comments: [{ author: dave, body: "Can we invite in batches?" }],
+    },
+  ]);
+
+  await seedBoard(globex, "Design System", [
+    {
+      title: "Token naming conventions",
+      description: "Agree on semantic names for color and spacing tokens.",
+      status: PostStatus.PLANNED,
+      author: carol,
+      voters: [carol],
+    },
+  ]);
+
+  const [orgCount, userCount, boardCount, postCount, voteCount] =
+    await Promise.all([
+      prisma.organization.count(),
+      prisma.user.count(),
+      prisma.board.count(),
+      prisma.post.count(),
+      prisma.vote.count(),
+    ]);
   console.log(
-    `Seed complete: ${orgCount} orgs, ${userCount} users, ${boardCount} boards.`,
+    `Seed complete: ${orgCount} orgs, ${userCount} users, ${boardCount} boards, ` +
+      `${postCount} posts, ${voteCount} votes.`,
   );
 }
 

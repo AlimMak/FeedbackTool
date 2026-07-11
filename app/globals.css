@@ -1,28 +1,81 @@
 @import "tailwindcss";
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
-}
+/*
+ * Design system — Linear-inspired: neutral surfaces, one calm-blue accent,
+ * flat (no gradients/heavy shadows), hairline borders, 12px cards. Two font
+ * weights only (400/500), sentence case throughout.
+ *
+ * Semantic tokens live as CSS variables (light default + dark override) and are
+ * exposed to Tailwind via `@theme inline`, so utilities like `bg-surface`,
+ * `text-muted`, `border-border`, `bg-accent`, `rounded-card` resolve at runtime
+ * and follow the color scheme automatically.
+ */
 
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
-    Helvetica, Arial, sans-serif;
-  --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas,
-    monospace;
+:root {
+  --background: #fafafa;
+  --surface: #ffffff;
+  --surface-2: #f3f4f6;
+  --foreground: #18181b;
+  --muted: #71717a;
+  --border: #e4e4e7;
+  --border-strong: #d4d4d8;
+  --accent: #3b60e4;
+  --accent-hover: #3355d4;
+  --accent-foreground: #ffffff;
+  --accent-subtle: #eef2fe;
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --background: #0a0a0a;
+    --background: #0a0a0b;
+    --surface: #131316;
+    --surface-2: #1c1c20;
     --foreground: #ededed;
+    --muted: #8b8b93;
+    --border: #262629;
+    --border-strong: #34343a;
+    --accent: #6d8bff;
+    --accent-hover: #7f99ff;
+    --accent-foreground: #0a0a0b;
+    --accent-subtle: rgba(109, 139, 255, 0.14);
   }
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-foreground: var(--foreground);
+  --color-muted: var(--muted);
+  --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
+  --color-accent: var(--accent);
+  --color-accent-hover: var(--accent-hover);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-accent-subtle: var(--accent-subtle);
+
+  --radius-card: 12px;
+
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+    Helvetica, Arial, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+}
+
+html,
+body {
+  height: 100%;
 }
 
 body {
   background: var(--background);
   color: var(--foreground);
   font-family: var(--font-sans);
+  font-weight: 400;
+  /* Only two weights are used anywhere: 400 and 500. */
+}
+
+/* Hairline (0.5px) border helper — crisp on retina, falls back to a thin line
+   elsewhere. Pair with a `border-*` color utility. */
+.hairline {
+  border-width: 0.5px;
 }

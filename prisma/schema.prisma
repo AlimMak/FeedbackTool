@@ -34,6 +34,9 @@ model User {
   updatedAt DateTime @updatedAt @map("updated_at")
 
   memberships Membership[]
+  posts       Post[]
+  votes       Vote[]
+  comments    Comment[]
 
   @@map("users")
 }
@@ -65,6 +68,8 @@ model Organization {
   memberships Membership[]
   boards      Board[]
   posts       Post[]
+  votes       Vote[]
+  comments    Comment[]
 
   @@map("organizations")
 }
@@ -104,22 +109,68 @@ model Board {
   @@map("boards")
 }
 
-/// A post inside a board. Tenant-owned. Carries `organization_id` directly (not
-/// only via its board) so the same RLS `tenant_isolation` policy applies to it
-/// as to every other tenant table — see prisma/migrations/*_add_billing_and_posts.
+/// A feedback/roadmap post inside a board. Tenant-owned. Carries
+/// `organization_id` directly (not only via its board) so the same RLS
+/// `tenant_isolation` policy applies to it as to every other tenant table.
 model Post {
-  id             String   @id @default(cuid())
-  content        String
-  boardId        String   @map("board_id")
-  organizationId String   @map("organization_id")
-  createdAt      DateTime @default(now()) @map("created_at")
+  id             String     @id @default(cuid())
+  title          String
+  description    String?
+  status         PostStatus @default(OPEN)
+  boardId        String     @map("board_id")
+  organizationId String     @map("organization_id")
+  authorId       String     @map("author_id")
+  createdAt      DateTime   @default(now()) @map("created_at")
+  updatedAt      DateTime   @updatedAt @map("updated_at")
 
   board        Board        @relation(fields: [boardId], references: [id], onDelete: Cascade)
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  author       User         @relation(fields: [authorId], references: [id], onDelete: Cascade)
+  votes        Vote[]
+  comments     Comment[]
 
   @@index([boardId])
   @@index([organizationId])
+  @@index([authorId])
   @@map("posts")
+}
+
+/// One upvote by one user on one post. Tenant-owned. The unique
+/// [postId, userId] constraint enforces one-vote-per-user-per-post at the DB.
+model Vote {
+  id             String   @id @default(cuid())
+  postId         String   @map("post_id")
+  userId         String   @map("user_id")
+  organizationId String   @map("organization_id")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  post         Post         @relation(fields: [postId], references: [id], onDelete: Cascade)
+  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+
+  @@unique([postId, userId])
+  @@index([postId])
+  @@index([organizationId])
+  @@map("votes")
+}
+
+/// A comment on a post. Tenant-owned. Present so post cards can show a real
+/// comment count; comment authoring UI is out of scope for now.
+model Comment {
+  id             String   @id @default(cuid())
+  body           String
+  postId         String   @map("post_id")
+  organizationId String   @map("organization_id")
+  authorId       String   @map("author_id")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  post         Post         @relation(fields: [postId], references: [id], onDelete: Cascade)
+  organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  author       User         @relation(fields: [authorId], references: [id], onDelete: Cascade)
+
+  @@index([postId])
+  @@index([organizationId])
+  @@map("comments")
 }
 
 enum Role {
@@ -131,4 +182,12 @@ enum Role {
 enum Plan {
   FREE
   PRO
+}
+
+/// Roadmap status for a Post.
+enum PostStatus {
+  OPEN
+  PLANNED
+  IN_PROGRESS
+  DONE
 }
