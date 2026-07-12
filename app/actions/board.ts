@@ -4,6 +4,7 @@ import { revalidatePath } from "next/cache";
 
 import { requireActiveOrg, withCurrentTenant } from "@/lib/dal";
 import { assertCanCreateBoard, PlanLimitError } from "@/lib/plans";
+import { slugify, uniqueSlug } from "@/lib/slug";
 
 /**
  * `useActionState` shape for board creation. On success returns the new board's
@@ -32,8 +33,16 @@ export async function createBoard(
       });
       // Server-side plan gate — the authoritative check.
       await assertCanCreateBoard(tx, org.plan);
+
+      // Generate a slug unique within this org (RLS scopes the read).
+      const existing = await tx.board.findMany({ select: { slug: true } });
+      const slug = uniqueSlug(
+        slugify(name),
+        new Set(existing.map((b) => b.slug)),
+      );
+
       const board = await tx.board.create({
-        data: { name, organizationId: activeOrgId },
+        data: { name, slug, organizationId: activeOrgId },
         select: { id: true },
       });
       return board.id;
@@ -47,3 +56,24 @@ export async function createBoard(
     throw error;
   }
 }
+
+/**
+ * Toggle a board's public visibility. OWNER-only; tenant-scoped via RLS. When
+ * off, the board 404s on the public route.
+ */
+export async function toggleBoardPublic(
+  boardId: string,
+  isPublic: boolean,
+): Promise<{ error?: string }> {
+  const { activeOrgId, role } = await requireActiveOrg();
+  if (!activeOrgId) return { error: "No active organization." };
+  if (role !== "OWNER") {
+    return { error: "Only organization owners can change board visibility." };
+  }
+  await withCurrentTenant(async (tx) => {
+    await tx.board.updateMany({ where: { id: boardId }, data: { isPublic } });
+  });
+  revalidatePath("/", "layout");
+  return {};
+}
+

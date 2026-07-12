@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useState } from "react";
 import { PostStatus } from "@prisma/client";
 
@@ -35,7 +36,15 @@ export function BoardBody({
     <div className="mx-auto max-w-3xl px-6 py-8">
       <header className="flex flex-wrap items-end justify-between gap-3">
         <div>
-          <h1 className="text-lg font-medium">{boardName}</h1>
+          <div className="flex items-center gap-2">
+            <h1 className="text-lg font-medium">{boardName}</h1>
+            <Link
+              href={`/boards/${boardId}/settings`}
+              className="text-xs text-muted hover:text-foreground"
+            >
+              Settings
+            </Link>
+          </div>
           {usage && (
             <p className="mt-0.5 text-xs text-muted">
               {usage.used} of {usage.limit} posts used
@@ -81,6 +90,7 @@ export function BoardBody({
             <PostCard
               key={post.id}
               post={post}
+              boardId={boardId}
               canChangeStatus={canChangeStatus}
             />
           ))

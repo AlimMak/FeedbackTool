@@ -35,9 +35,13 @@ export const authConfig = {
      */
     authorized({ auth, request: { nextUrl } }) {
       const isLoggedIn = Boolean(auth?.user);
-      const isOnLogin = nextUrl.pathname === "/login";
+      const { pathname } = nextUrl;
 
-      if (isOnLogin) {
+      // Public, unauthenticated surfaces: the end-user feedback boards under
+      // /b/* are meant to be viewed without an account.
+      if (pathname.startsWith("/b/")) return true;
+
+      if (pathname === "/login") {
         // Already signed in? Bounce away from the login page.
         if (isLoggedIn) return Response.redirect(new URL("/", nextUrl));
         return true;

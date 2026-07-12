@@ -51,7 +51,7 @@ export default async function BoardPage({
     title: p.title,
     description: p.description,
     status: p.status,
-    authorName: p.author.name,
+    authorName: p.author?.name ?? "Anonymous",
     votes: p._count.votes,
     comments: p._count.comments,
     hasVoted: p.votes.length > 0,

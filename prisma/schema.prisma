@@ -96,8 +96,14 @@ model Membership {
 /// A board belonging to an organization. Tenant-owned domain object — the
 /// placeholder "real" entity that proves the stack end to end.
 model Board {
-  id             String   @id @default(cuid())
-  name           String
+  id   String @id @default(cuid())
+  name String
+  /// URL slug, unique within the organization. Generated from the name; part of
+  /// the public URL /b/{orgSlug}/{boardSlug}.
+  slug String
+  /// When true the board is viewable on the public, unauthenticated route.
+  /// Private boards 404 there. Defaults to private.
+  isPublic       Boolean  @default(false) @map("is_public")
   organizationId String   @map("organization_id")
   createdAt      DateTime @default(now()) @map("created_at")
   updatedAt      DateTime @updatedAt @map("updated_at")
@@ -105,6 +111,7 @@ model Board {
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
   posts        Post[]
 
+  @@unique([organizationId, slug])
   @@index([organizationId])
   @@map("boards")
 }
@@ -119,13 +126,16 @@ model Post {
   status         PostStatus @default(OPEN)
   boardId        String     @map("board_id")
   organizationId String     @map("organization_id")
-  authorId       String     @map("author_id")
+  /// Author user id. Null for anonymous public submissions.
+  authorId       String?    @map("author_id")
+  /// Optional contact email captured from an anonymous public submission.
+  submitterEmail String?    @map("submitter_email")
   createdAt      DateTime   @default(now()) @map("created_at")
   updatedAt      DateTime   @updatedAt @map("updated_at")
 
   board        Board        @relation(fields: [boardId], references: [id], onDelete: Cascade)
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  author       User         @relation(fields: [authorId], references: [id], onDelete: Cascade)
+  author       User?        @relation(fields: [authorId], references: [id], onDelete: SetNull)
   votes        Vote[]
   comments     Comment[]
 
@@ -135,41 +145,54 @@ model Post {
   @@map("posts")
 }
 
-/// One upvote by one user on one post. Tenant-owned. The unique
-/// [postId, userId] constraint enforces one-vote-per-user-per-post at the DB.
+/// One upvote on a post — by a signed-in user (userId) OR an anonymous public
+/// visitor (visitorId, a signed cookie value). Exactly one of the two is set.
+/// The two unique constraints enforce one-vote-per-post for each identity kind;
+/// nulls are distinct in Postgres, so the unused column never collides.
 model Vote {
   id             String   @id @default(cuid())
   postId         String   @map("post_id")
-  userId         String   @map("user_id")
+  userId         String?  @map("user_id")
+  visitorId      String?  @map("visitor_id")
   organizationId String   @map("organization_id")
   createdAt      DateTime @default(now()) @map("created_at")
 
   post         Post         @relation(fields: [postId], references: [id], onDelete: Cascade)
-  user         User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user         User?        @relation(fields: [userId], references: [id], onDelete: Cascade)
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
 
   @@unique([postId, userId])
+  @@unique([postId, visitorId])
   @@index([postId])
   @@index([organizationId])
   @@map("votes")
 }
 
-/// A comment on a post. Tenant-owned. Present so post cards can show a real
-/// comment count; comment authoring UI is out of scope for now.
+/// A comment on a post. Tenant-owned. Written by a signed-in member (authorId)
+/// or an anonymous public visitor (authorName, optional). `parentId` gives one
+/// level of "threaded-lite" replies.
 model Comment {
   id             String   @id @default(cuid())
   body           String
   postId         String   @map("post_id")
   organizationId String   @map("organization_id")
-  authorId       String   @map("author_id")
+  /// Author user id, or null for an anonymous public comment.
+  authorId       String?  @map("author_id")
+  /// Display name for an anonymous comment (falls back to "Anonymous").
+  authorName     String?  @map("author_name")
+  /// Parent comment for a reply; null for a top-level comment.
+  parentId       String?  @map("parent_id")
   createdAt      DateTime @default(now()) @map("created_at")
 
   post         Post         @relation(fields: [postId], references: [id], onDelete: Cascade)
   organization Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
-  author       User         @relation(fields: [authorId], references: [id], onDelete: Cascade)
+  author       User?        @relation(fields: [authorId], references: [id], onDelete: SetNull)
+  parent       Comment?     @relation("CommentReplies", fields: [parentId], references: [id], onDelete: Cascade)
+  replies      Comment[]    @relation("CommentReplies")
 
   @@index([postId])
   @@index([organizationId])
+  @@index([parentId])
   @@map("comments")
 }
 

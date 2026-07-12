@@ -175,7 +175,49 @@ Defense in depth: even if the DAL check were wrong, RLS still refuses rows for
 any org whose id isn't in `app.current_tenant`. The membership re-check exists so
 a *revoked* membership can't keep reading through a still-valid token.
 
-### 5. Parameterization
+### 5. Deriving the tenant on public (unauthenticated) routes
+
+The public feedback boards (`/b/{orgSlug}/{boardSlug}`, in `app/b/…`) have **no
+session**, so the active-org mechanism above doesn't apply. The tenant comes from
+the **URL slug** instead. The two paths differ only in *how the org id is found*;
+everything after that is identical.
+
+| | Authenticated (`app/(app)/…`) | Public (`app/b/…`) |
+| --- | --- | --- |
+| Identity | Session JWT | None |
+| Tenant source | `session.activeOrgId` (membership re-verified) | `orgSlug` in the path |
+| Resolution helper | `requireActiveOrg()` | `resolvePublicOrg(orgSlug)` in `lib/public.ts` |
+| Data access | `withCurrentTenant()` → `withTenant(orgId)` | `withPublicTenant(orgId)` → `withTenant(orgId)` |
+| RLS | enforced | **enforced (identically)** |
+
+`resolvePublicOrg` maps `orgSlug → { id, name }` using the **owner client**. This
+is unavoidable and safe: RLS default-denies a connection with no tenant context,
+so you can't read the org row to learn its id *before* you've set the tenant —
+the same bootstrapping the authenticated side does when it resolves a session to
+a user's memberships. Crucially this lookup returns only **routing identity**
+(id + display name), never tenant data.
+
+Once the id is known, **every** board/post/vote/comment query on a public route
+runs through `withPublicTenant` (a thin wrapper over `withTenant`), so RLS
+applies exactly as on the authenticated side. Consequences that fall out for
+free:
+
+- A public route **cannot read another org's rows** — passing org A's slug with
+  a board id from org B returns nothing, because the query runs under org A's
+  RLS context.
+- **Only boards explicitly marked `isPublic` are reachable**; the board lookup
+  filters on it and 404s otherwise, so private boards never surface publicly even
+  though they live in the same tables.
+- Anonymous **votes** dedupe on a signed (HMAC) `visitorId` cookie via a unique
+  `(postId, visitorId)` constraint; anonymous **posts/comments** carry a null
+  author. Votes and submissions are also **rate-limited** server-side
+  (`lib/rate-limit.ts`), and public submissions count against the org's plan post
+  limit like any other write.
+
+The public write actions (`app/actions/public.ts`) re-resolve the tenant from the
+slug on every call and never trust a client-supplied org id.
+
+### 6. Parameterization
 
 `SET LOCAL app.current_tenant = '<value>'` can't be parameterized directly, so
 `withTenant` uses `set_config(name, value, is_local)` with the tenant id passed

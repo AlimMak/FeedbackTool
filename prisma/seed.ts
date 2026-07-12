@@ -1,6 +1,8 @@
 import { PrismaClient, Role, PostStatus } from "@prisma/client";
 import bcrypt from "bcryptjs";
 
+import { slugify } from "../lib/slug";
+
 // The seed connects as `saas_owner` (DATABASE_URL) and therefore bypasses RLS,
 // which is exactly what's needed to write across multiple tenants in one pass.
 const prisma = new PrismaClient();
@@ -90,16 +92,21 @@ async function main(): Promise<void> {
     status: PostStatus;
     author: { id: string };
     voters: ReadonlyArray<{ id: string }>;
-    comments?: ReadonlyArray<{ author: { id: string }; body: string }>;
+    comments?: ReadonlyArray<{
+      author?: { id: string };
+      authorName?: string;
+      body: string;
+    }>;
   };
 
   async function seedBoard(
     org: { id: string },
     name: string,
     posts: ReadonlyArray<PostSpec>,
+    isPublic = false,
   ): Promise<void> {
     const board = await prisma.board.create({
-      data: { name, organizationId: org.id },
+      data: { name, slug: slugify(name), isPublic, organizationId: org.id },
     });
     for (const spec of posts) {
       await prisma.post.create({
@@ -119,7 +126,8 @@ async function main(): Promise<void> {
           comments: {
             create: (spec.comments ?? []).map((c) => ({
               body: c.body,
-              authorId: c.author.id,
+              authorId: c.author?.id ?? null,
+              authorName: c.authorName ?? null,
               organizationId: org.id,
             })),
           },
@@ -138,6 +146,7 @@ async function main(): Promise<void> {
       comments: [
         { author: alice, body: "Yes please — my eyes will thank you." },
         { author: dave, body: "Make sure charts are readable in dark too." },
+        { authorName: "Sam", body: "Been waiting for this. +1 from a customer." },
       ],
     },
     {
@@ -182,7 +191,7 @@ async function main(): Promise<void> {
       author: dave,
       voters: [],
     },
-  ]);
+  ], true);
 
   await seedBoard(acme, "Marketing", [
     {
@@ -212,7 +221,7 @@ async function main(): Promise<void> {
       voters: [carol, dave],
       comments: [{ author: dave, body: "Can we invite in batches?" }],
     },
-  ]);
+  ], true);
 
   await seedBoard(globex, "Design System", [
     {
