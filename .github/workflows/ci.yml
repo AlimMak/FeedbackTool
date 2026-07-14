@@ -1,0 +1,75 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  ci:
+    name: typecheck · lint · test
+    runs-on: ubuntu-latest
+
+    # Ephemeral Postgres for the RLS/plan-limit tests.
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: saas_owner
+          POSTGRES_PASSWORD: owner_pw
+          POSTGRES_DB: saas_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U saas_owner -d saas_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      # Owner (bypasses RLS) — migrations + admin/system queries. Pooled/direct
+      # are the same in CI (no pooler).
+      DATABASE_URL: postgresql://saas_owner:owner_pw@localhost:5432/saas_test?schema=public
+      DIRECT_URL: postgresql://saas_owner:owner_pw@localhost:5432/saas_test?schema=public
+      # Runtime role — RLS enforced.
+      APP_DATABASE_URL: postgresql://saas_app:app_pw@localhost:5432/saas_test?schema=public
+      # Not a real secret; only needed so modules that read it don't throw.
+      AUTH_SECRET: ci-placeholder-secret-not-used-for-anything-real
+      APP_URL: http://localhost:3000
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      # The runtime role isn't created by migrations (tables don't exist yet at
+      # role-creation time); the migration only GRANTs to it. The DB is fresh
+      # each run, so a plain CREATE ROLE is fine.
+      - name: Create RLS runtime role (saas_app)
+        env:
+          PGPASSWORD: owner_pw
+        run: |
+          psql -h localhost -U saas_owner -d saas_test -v ON_ERROR_STOP=1 \
+            -c "CREATE ROLE saas_app LOGIN PASSWORD 'app_pw' NOSUPERUSER NOBYPASSRLS;" \
+            -c "GRANT CONNECT ON DATABASE saas_test TO saas_app;" \
+            -c "GRANT USAGE ON SCHEMA public TO saas_app;"
+
+      - name: Prisma generate
+        run: npm run prisma:generate
+
+      - name: Run migrations (migrate deploy, not db push)
+        run: npm run db:migrate
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Test (RLS, plan limits, votes, slugs)
+        run: npm test

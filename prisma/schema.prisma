@@ -18,7 +18,14 @@ generator client {
 
 datasource db {
   provider = "postgresql"
+  // Runtime/admin (owner) connection. In production this is the POOLED,
+  // transaction-mode connection string (e.g. Neon's `-pooler` host).
   url      = env("DATABASE_URL")
+  // Direct (non-pooled, session) connection used by Prisma Migrate and
+  // introspection. Migrations need session-level features (advisory locks) that
+  // a transaction-mode pooler doesn't support. In local dev DIRECT_URL can be
+  // the same value as DATABASE_URL. See .env.example / ARCHITECTURE.md.
+  directUrl = env("DIRECT_URL")
 }
 
 /// A person. Global identity — not tenant-scoped. Belongs to zero or more

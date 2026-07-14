@@ -265,7 +265,7 @@ projection** of it — `plan`, `subscriptionStatus`, `stripeCustomerId`,
 `stripeSubscriptionId`. The app never flips a customer to PRO on its own: it
 starts a Checkout session and then waits for Stripe to tell it what happened.
 
-The projection is updated by the webhook at `app/api/stripe/webhook`:
+The projection is updated by the webhook at `app/api/webhooks/stripe`:
 
 - **Signature is verified** against the raw request body with
   `STRIPE_WEBHOOK_SECRET` (`stripe.webhooks.constructEvent`). An unsigned or
@@ -323,9 +323,10 @@ Honest downsides of this approach, and how they're mitigated here:
 - **Blast radius of an RLS mistake.** Because all tenants share tables, a
   missing policy on a *new* tenant-owned table, or accidental use of the owner
   client to serve a request, leaks across tenants. Mitigations: default-deny
-  policies, a documented owner-vs-app client split, and a rule that every new
+  policies, a documented owner-vs-app client split, a rule that every new
   tenant-owned table gets `ENABLE ROW LEVEL SECURITY` + a `tenant_isolation`
-  policy in the same migration. This deserves a test in CI as the schema grows.
+  policy in the same migration, and a CI test (`tests/rls.test.ts`) that asserts
+  default-deny and cross-tenant denial against a real Postgres.
 - **Noisy neighbours.** Shared tables and one connection pool mean one tenant's
   load can affect others. Shared-DB tenancy trades isolation for efficiency;
   very large tenants may eventually need sharding or extraction.
@@ -342,6 +343,89 @@ Honest downsides of this approach, and how they're mitigated here:
 
 ---
 
+## Production & operations
+
+The step-by-step deploy runbook lives in the [README](./README.md#deploy-to-production-vercel--neon).
+This section explains the production *shape* — why the pieces are arranged the
+way they are.
+
+### Hosting
+
+- **App:** Vercel (serverless functions per route). Stateless; all state is in
+  Postgres and the signed session cookie.
+- **Database:** Neon Postgres. Chosen specifically because its pooler runs
+  **PgBouncer in transaction mode** — a hard requirement for how RLS is scoped
+  here (below). Supabase Postgres works identically; the only thing that matters
+  is a *transaction*-mode pooler.
+
+### Connection pooling × RLS — the load-bearing interaction
+
+Serverless functions each open their own DB connections, so a raw connection per
+invocation exhausts Postgres. The fix is a pooler, and Neon's is PgBouncer. This
+intersects with RLS in a way that is easy to get subtly, silently wrong:
+
+The tenant is carried in `app.current_tenant`, set with `set_config(…, is_local
+=> true)` — the function form of **`SET LOCAL`**, which is scoped to the current
+transaction. `withTenant()` (`lib/tenant-db.ts`) sets it and runs the tenant's
+queries **inside the same `$transaction`**. That is the only arrangement that is
+correct under a transaction-mode pooler:
+
+- **Transaction mode** assigns a backend connection to a client for the duration
+  of one transaction, then returns it to the pool. Because the `set_config` and
+  the queries share one transaction, they always land on the **same** backend,
+  and the setting is discarded at `COMMIT`. Correct, and no leakage.
+- Setting the variable **outside** a transaction (`$executeRaw` to set it, then a
+  separate query) would let the pooler route the two statements to **different**
+  backends. The query runs with no tenant set → default-deny → **rows silently
+  dropped**; or it picks up a backend still carrying a **previous** request's
+  value → **cross-tenant leak**. Both are silent — no error.
+- Plain `SET` (session scope) on a **session-mode** pooler would leave the
+  variable set on a shared backend after the request returns, leaking it into
+  whichever tenant reuses that connection next.
+
+So the rule is a package deal: **transaction-mode pooler + `SET LOCAL` + query,
+all in one transaction.** Migrations are the exception — `prisma migrate deploy`
+uses `DIRECT_URL` (the non-pooled host) because migrations need session-level
+features (advisory locks) a transaction pooler can't provide.
+
+`DATABASE_URL` (owner, pooled) and `APP_DATABASE_URL` (`saas_app`, pooled) are
+the runtime connections; `DIRECT_URL` (owner, direct) is migrations-only. See
+`prisma/schema.prisma` (`url` + `directUrl`) and `.env.example`.
+
+### Migrations on deploy
+
+The Vercel build runs `vercel-build`
+(`prisma generate && prisma migrate deploy && next build`), so schema **and RLS
+policies/grants** are applied with `migrate deploy` before the app serves
+traffic — never `db push`, which has no migration history and could drift or
+drop data. Each new tenant-owned table ships its `ENABLE ROW LEVEL SECURITY` +
+`tenant_isolation` policy + `saas_app` GRANT in the same migration (see the
+`posts`/`votes`/`comments` migrations), so a deploy can never expose a table
+before its policy exists.
+
+### CI gates
+
+`.github/workflows/ci.yml` runs on every push and PR: **typecheck → lint →
+tests**, and fails the build on any error. The test job spins up an ephemeral
+`postgres:16` service, creates the `saas_app` role, runs `migrate deploy`, and
+executes the suite — including `tests/rls.test.ts`, which asserts the isolation
+invariants directly against Postgres (default-deny, no cross-tenant read, `WITH
+CHECK` on writes) plus plan-limit and vote-dedupe enforcement. Deploy only from a
+green commit; CI is the pre-deploy gate.
+
+### Secrets management
+
+No secrets live in the repo. `.env` is gitignored and `.env.example` holds only
+placeholders. In production, every secret (`AUTH_SECRET`, the three DB URLs,
+`STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`) is set in Vercel's encrypted
+environment-variable store, scoped per environment so Preview deploys never see
+production credentials. CI uses throwaway values for a disposable database. The
+runtime app role (`saas_app`) is deliberately un-privileged (`NOSUPERUSER`,
+`NOBYPASSRLS`, non-owner), so even a leak of `APP_DATABASE_URL` is still bounded
+by RLS.
+
+---
+
 ## What's deliberately not here yet
 
 - **User sign-up / invitations.** Accounts and memberships come from the seed;
@@ -349,8 +433,3 @@ Honest downsides of this approach, and how they're mitigated here:
 - **Webhook event dedupe table.** Handlers are idempotent by construction; a
   persisted `processed_stripe_events` ledger would additionally short-circuit
   replays and guard against out-of-order deliveries as the event set grows.
-- **Automated RLS regression tests** asserting default-deny and cross-tenant
-  denial as the schema evolves.
-- **Production connection management** (a pooler such as PgBouncer/Prisma
-  Accelerate) — the transaction-local tenant variable is already compatible with
-  transaction-mode pooling.

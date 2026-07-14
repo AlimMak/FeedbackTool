@@ -39,6 +39,27 @@ if (process.env.NODE_ENV !== "production") {
  * The value is passed as a bound parameter, so a tenant id can never be used
  * for SQL injection.
  *
+ * ---
+ * **Why this is safe under serverless connection pooling** (e.g. Neon's
+ * PgBouncer in *transaction* mode, which Vercel functions use):
+ *
+ *   1. Everything runs inside ONE `appPrisma.$transaction(...)`. Prisma's
+ *      interactive transaction pins a single backend connection for the whole
+ *      callback, and a transaction-mode pooler keeps that backend assigned for
+ *      the duration of the transaction. So the `set_config` and the queries that
+ *      follow always execute on the *same* connection.
+ *   2. `is_local => true` scopes the setting to the transaction; it is discarded
+ *      at COMMIT and cannot bleed into the next request that reuses the backend.
+ *
+ * The pitfalls this avoids:
+ *   - Setting the tenant OUTSIDE a transaction (a plain `appPrisma.$executeRaw`
+ *     then a separate query) would, under a pooler, likely land the query on a
+ *     DIFFERENT backend with no tenant set → default-deny → **rows silently
+ *     dropped** (or, worse, a stale tenant leaking in from a prior request).
+ *   - Using `SET` instead of `SET LOCAL` on a *session*-mode pooler would leave
+ *     the variable set on the shared connection → the next tenant could **read
+ *     across the boundary**. `SET LOCAL` inside the txn is immune to both.
+ *
  * @example
  *   const boards = await withTenant(orgId, (tx) => tx.board.findMany());
  */
